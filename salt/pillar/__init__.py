@@ -6,6 +6,8 @@ Render the pillar data
 import os
 import collections
 import logging
+import re
+import types
 
 # Import salt libs
 import salt.loader
@@ -18,6 +20,54 @@ from salt.utils.dictupdate import update
 from salt.version import __version__
 
 log = logging.getLogger(__name__)
+
+
+class PillarDict(dict):
+
+    VARSUBST_RE = '\$\{\s*(?P<var>[^} ]+)\s*}'
+
+    def __init__(self, opts, *args, **kwargs):
+        self._grains = opts.get('grains', {})
+        super(PillarDict, self).__init__(*args, **kwargs)
+
+    def copy(self):
+        return PillarDict.__new__(self)
+
+    def __getitem__(self, key):
+        value = super(PillarDict, self).__getitem__(key)
+        return self._interpolate(value)
+
+    def get(self, key, default=None):
+        value = super(PillarDict, self).get(key, default)
+        return self._interpolate(value)
+
+    def _resolve_ref(self, ref, db):
+        if ref == 'floyd_reference':
+            import ipdb; ipdb.set_trace()
+        parts = ref.split('.',1)
+        d = parts[0]
+        if len(parts) == 1:
+            return db[d]
+        else:
+            ref = parts[1]
+            return self._resolve_ref(ref, db[d])
+
+    def _interpolate(self, value):
+        if isinstance(value, dict):
+            return PillarDict(self._grains, value)
+
+        elif isinstance(value, (list, tuple)):
+            return [self._interpolate(i) for i in value]
+
+        elif not isinstance(value, types.StringTypes):
+            return value
+
+        try:
+            _varsubst = lambda m: self._resolve_ref(m.group('var'), self)
+            return re.sub(PillarDict.VARSUBST_RE, _varsubst, value)
+        except KeyError as e:
+            print e, self
+
 
 def get_pillar(opts, grains, id_, env=None, ext=None):
     '''
@@ -58,7 +108,7 @@ class RemotePillar(object):
         key = self.auth.get_keys()
         aes = key.private_decrypt(ret['key'], 4)
         pcrypt = salt.crypt.Crypticle(self.opts, aes)
-        return pcrypt.loads(ret['pillar'])
+        return PillarDict(self.grains, pcrypt.loads(ret['pillar']))
 
 
 class Pillar(object):
@@ -321,7 +371,7 @@ class Pillar(object):
         Extract the sls pillar files from the matches and render them into the
         pillar
         '''
-        pillar = {}
+        pillar = PillarDict(self.opts)
         errors = []
         for env, pstates in matches.items():
             mods = set()
